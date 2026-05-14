@@ -27,8 +27,6 @@
 // ==========================================
 // CONFIGURATION
 // ==========================================
-const char* api_host = "7v51v462zk.execute-api.ap-south-1.amazonaws.com";
-const char* api_path = "/prod/upload";
 
 // Prototypes
 bool initCamera();
@@ -92,50 +90,71 @@ void setup() {
 
 void uploadToAPIGateway(String base64Data) {
     WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(30000); // Increased to 30s for the slower paced upload
+    client.setInsecure(); // Required for AWS unless you manage the CA root cert
+    client.setTimeout(30000); // 30s timeout for slow cellular uploads
 
-    if (client.connect(api_host, 443)) {
-        Serial.println("Connected. Streaming RAW Base64 (Paced)...");
+    Serial.println(">>> Connecting to Secure API Gateway...");
+    
+    // AWS_API_HOST and AWS_API_KEY are referenced from your secrets.h
+    if (client.connect(AWS_API_HOST, 443)) {
+        Serial.println(">>> TCP Connected. Pacing data stream...");
 
+        // Content-Length must be exact for the raw Base64 string body
         size_t contentLength = base64Data.length();
 
-        client.print("POST " + String(api_path) + " HTTP/1.1\r\n");
-        client.print("Host: " + String(api_host) + "\r\n");
+        // 1. Send HTTP POST Headers
+        client.print("POST " + String(AWS_API_PATH) + " HTTP/1.1\r\n");
+        client.print("Host: " + String(AWS_API_HOST) + "\r\n");
+        
+        // --- Security: The AWS API Key Header ---
+        client.print("x-api-key: " + String(AWS_API_KEY) + "\r\n");
+        
         client.println("Content-Type: text/plain");
         client.print("Content-Length: "); client.println(contentLength);
         client.println("Connection: close");
-        client.println(); 
+        client.println(); // Mandatory empty line between headers and body
         
+        // 2. Stream the Body in Paced Chunks
         size_t total = base64Data.length();
         size_t chunkSize = 1024;
+        
         for (size_t i = 0; i < total; i += chunkSize) {
             size_t len = (total - i < chunkSize) ? (total - i) : chunkSize;
+            
+            // Send the 1KB chunk
             client.print(base64Data.substring(i, i + len));
             
+            // Visual progress on Serial monitor
             Serial.print("#");
             
-            // PACING: Give the 4G router 50ms to breathe
+            // PACING: Crucial for 4G stability. 
+            // Gives the modem 50ms to push the buffer to the tower.
             delay(50); 
             yield(); 
         }
-        client.println(); 
         
-        Serial.println("\nStream finished. Awaiting Response...");
+        // Finalize the transmission
+        client.println(); 
+        Serial.println("\n>>> Stream finished. Awaiting API Response...");
 
+        // 3. Response Capture Logic
         unsigned long startResponse = millis();
-        while (millis() - startResponse < 20000) {
+        bool receivedResponse = false;
+
+        while (millis() - startResponse < 15000) { // Wait up to 15s for AWS/Lambda
             while (client.available()) {
                 String line = client.readStringUntil('\n');
                 Serial.println("AWS >> " + line);
-                startResponse = millis();
+                receivedResponse = true;
+                startResponse = millis(); // Reset timeout as long as data is flowing
             }
-            if (!client.connected()) break;
+            if (receivedResponse && !client.connected()) break;
         }
     } else {
-        Serial.println("API Connection Failed.");
+        Serial.println(">>> ERROR: Connection to API Gateway failed.");
     }
-    client.stop();
+    
+    client.stop(); // Clean up the socket
 }
 
 bool initCamera() {
@@ -162,7 +181,7 @@ bool initCamera() {
     config.pixel_format = PIXFORMAT_JPEG;
 
     // Use VGA for better detail
-    config.frame_size = FRAMESIZE_VGA;
+    config.frame_size = FRAMESIZE_SVGA; // FRAMESIZE_QVGA , FRAMESIZE_VGA, FRAMESIZE_XVGA
     config.jpeg_quality = 12;
     config.fb_count = 1;
 
