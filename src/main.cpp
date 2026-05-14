@@ -182,7 +182,7 @@ bool initCamera() {
 
     // Use VGA for better detail
     config.frame_size = FRAMESIZE_SVGA; // FRAMESIZE_QVGA , FRAMESIZE_VGA, FRAMESIZE_XVGA
-    config.jpeg_quality = 12;
+    config.jpeg_quality = 26;
     config.fb_count = 1;
 
     esp_err_t err = esp_camera_init(&config);
