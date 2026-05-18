@@ -32,6 +32,7 @@
 bool initCamera();
 void uploadToAPIGateway(String base64Data);
 
+
 void setup() {
     // 1. Start Serial for Debugging
     Serial.begin(115200);
@@ -64,17 +65,17 @@ void setup() {
         esp_deep_sleep_start();
     }
     Serial.println("\nWiFi Connected.");
-
+    
     // 4. Capture Phase
     camera_fb_t * fb = esp_camera_fb_get();
     if (!fb) {
         Serial.println("Camera Capture Failed. Restarting...");
         ESP.restart();
     }
-    Serial.println("Image Captured.");
+    Serial.printf("Image Captured. Raw Buffer Size: %d bytes\n", fb->len);
 
     // 5. Encoding Phase
-    // Release the camera buffer immediately after encoding to free RAM for SSL
+    // Convert raw frame to Base64 text string and free memory immediately
     String base64Image = base64::encode(fb->buf, fb->len);
     esp_camera_fb_return(fb); 
     Serial.printf("Encoded Image Size: %d bytes\n", base64Image.length());
@@ -90,71 +91,60 @@ void setup() {
 
 void uploadToAPIGateway(String base64Data) {
     WiFiClientSecure client;
-    client.setInsecure(); // Required for AWS unless you manage the CA root cert
-    client.setTimeout(30000); // 30s timeout for slow cellular uploads
+    client.setInsecure();
+    client.setTimeout(30000); 
+
+    String head = "{\"image\":\"";
+    String tail = "\"}";
+    size_t contentLength = head.length() + base64Data.length() + tail.length();
 
     Serial.println(">>> Connecting to Secure API Gateway...");
-    
-    // AWS_API_HOST and AWS_API_KEY are referenced from your secrets.h
     if (client.connect(AWS_API_HOST, 443)) {
-        Serial.println(">>> TCP Connected. Pacing data stream...");
+        Serial.println(">>> TCP Connected. Sending Standardized Headers...");
 
-        // Content-Length must be exact for the raw Base64 string body
-        size_t contentLength = base64Data.length();
-
-        // 1. Send HTTP POST Headers
         client.print("POST " + String(AWS_API_PATH) + " HTTP/1.1\r\n");
         client.print("Host: " + String(AWS_API_HOST) + "\r\n");
-        
-        // --- Security: The AWS API Key Header ---
         client.print("x-api-key: " + String(AWS_API_KEY) + "\r\n");
+        client.print("Content-Type: application/json\r\n"); 
+        client.print("Content-Length: " + String(contentLength) + "\r\n");
+        client.print("Connection: close\r\n\r\n");
         
-        client.println("Content-Type: text/plain");
-        client.print("Content-Length: "); client.println(contentLength);
-        client.println("Connection: close");
-        client.println(); // Mandatory empty line between headers and body
+        client.print(head); 
+
+        Serial.println("Streaming base64 data directly from heap allocation...");
         
-        // 2. Stream the Body in Paced Chunks
+        const char* rawPointer = base64Data.c_str();
         size_t total = base64Data.length();
-        size_t chunkSize = 1024;
+        size_t chunkSize = 1024; 
         
         for (size_t i = 0; i < total; i += chunkSize) {
             size_t len = (total - i < chunkSize) ? (total - i) : chunkSize;
             
-            // Send the 1KB chunk
-            client.print(base64Data.substring(i, i + len));
+            client.write((const uint8_t*)(rawPointer + i), len);
             
-            // Visual progress on Serial monitor
             Serial.print("#");
-            
-            // PACING: Crucial for 4G stability. 
-            // Gives the modem 50ms to push the buffer to the tower.
             delay(50); 
             yield(); 
         }
         
-        // Finalize the transmission
-        client.println(); 
-        Serial.println("\n>>> Stream finished. Awaiting API Response...");
+        client.print(tail); 
+        client.flush();
+        
+        Serial.println("\n>>> Stream completely finalized. Awaiting Response...");
 
-        // 3. Response Capture Logic
         unsigned long startResponse = millis();
-        bool receivedResponse = false;
-
-        while (millis() - startResponse < 15000) { // Wait up to 15s for AWS/Lambda
+        while (millis() - startResponse < 15000) {
             while (client.available()) {
                 String line = client.readStringUntil('\n');
                 Serial.println("AWS >> " + line);
-                receivedResponse = true;
-                startResponse = millis(); // Reset timeout as long as data is flowing
+                startResponse = millis(); 
             }
-            if (receivedResponse && !client.connected()) break;
+            if (!client.connected()) break;
         }
     } else {
-        Serial.println(">>> ERROR: Connection to API Gateway failed.");
+        Serial.println(">>> Connection to API Gateway failed.");
     }
-    
-    client.stop(); // Clean up the socket
+    client.stop();
 }
 
 bool initCamera() {
@@ -182,7 +172,7 @@ bool initCamera() {
 
     // Use VGA for better detail
     config.frame_size = FRAMESIZE_SVGA; // FRAMESIZE_QVGA , FRAMESIZE_VGA, FRAMESIZE_XVGA
-    config.jpeg_quality = 26;
+    config.jpeg_quality = 28;
     config.fb_count = 1;
 
     esp_err_t err = esp_camera_init(&config);
