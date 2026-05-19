@@ -98,7 +98,7 @@ void setup() {
 
     // 7. Automation: Deep Sleep 15 Minutes
     Serial.println("Cycle Complete. Entering Deep Sleep.");
-    esp_sleep_enable_timer_wakeup(10ULL * 60ULL * 1000000ULL);
+    esp_sleep_enable_timer_wakeup(10ULL * 45ULL * 1000000ULL);
     esp_deep_sleep_start();
 }
 
@@ -191,8 +191,8 @@ bool initCamera() {
     config.pixel_format = PIXFORMAT_JPEG;
 
     // Fixed stable baseline for your SVGA field tests
-    config.frame_size = FRAMESIZE_SVGA; 
-    config.jpeg_quality = 28;
+    config.frame_size = FRAMESIZE_XGA; 
+    config.jpeg_quality = 40;
     config.fb_count = 1; // Keeping it at 1 to save critical SRAM for TLS strings
 
     esp_err_t err = esp_camera_init(&config);
