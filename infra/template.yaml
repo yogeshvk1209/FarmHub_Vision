@@ -1,0 +1,67 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: FarmHub Vision Ingestion Pipeline - API Gateway & Lambda Handler
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 256
+    Runtime: nodejs20.x
+
+Resources:
+  # 1. API Gateway Setup
+  FarmHubApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      # Enforce API Key validation globally
+      ApiKeyRequired: true
+
+  # 2. Lambda Processing Function
+  FarmImageBridgeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/  # Points relative to template.yaml to find index.mjs
+      Handler: index.handler
+      Policies:
+        # Grants your Lambda explicit execution permissions to write straight to S3
+        - S3CrudPolicy:
+            BucketName: farm-supervisor-v1
+      Events:
+        UploadRoute:
+          Type: Api
+          Properties:
+            Path: /upload
+            Method: post
+            RestApiId: !Ref FarmHubApiGateway
+
+  # 3. Create the API Key
+  FarmHubApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: FarmHubESP32Key
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref FarmHubApiGateway
+          StageName: prod
+
+  # 4. Create the Usage Plan and Bind the Key to the Stage (Fixes the 403 issue dynamically!)
+  FarmHubUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: FarmHubStandardPlan
+      ApiStages:
+        - ApiId: !Ref FarmHubApiGateway
+          StageName: prod
+
+  FarmHubUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref FarmHubApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref FarmHubUsagePlan
+
+Outputs:
+  ApiEndpoint:
+    Description: "Target endpoint URL for your ESP32 secrets.h file"
+    Value: !Sub "https://${FarmHubApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/upload"

@@ -39,3 +39,6 @@ __pycache__/
 *.csv
 *.pyc
 .ipynb_checkpoints/
+# AWS SAM/CloudFormation local build directories
+.aws-sam/
+infra/package-lock.json

@@ -66,7 +66,20 @@ void setup() {
     }
     Serial.println("\nWiFi Connected.");
     
-    // 4. Capture Phase
+    // 4. Capture Phase (With Active Buffer Flushing)
+    Serial.println("Flushing stale overexposed frames from DMA buffer...");
+    
+    // Snapping 4 quick throwaway frames allows the AEC to step down seamlessly
+    for (int i = 0; i < 4; i++) {
+        camera_fb_t * throwaway = esp_camera_fb_get();
+        if (throwaway) {
+            esp_camera_fb_return(throwaway); // Toss it back immediately
+            delay(150); // Small pause to let the sensor compute exposure updates
+        }
+    }
+    
+    // Now capture the 5th frame, which has the updated exposure settings
+    Serial.println("Capturing exposure-optimized frame...");
     camera_fb_t * fb = esp_camera_fb_get();
     if (!fb) {
         Serial.println("Camera Capture Failed. Restarting...");
@@ -85,7 +98,7 @@ void setup() {
 
     // 7. Automation: Deep Sleep 15 Minutes
     Serial.println("Cycle Complete. Entering Deep Sleep.");
-    esp_sleep_enable_timer_wakeup(15ULL * 60ULL * 1000000ULL);
+    esp_sleep_enable_timer_wakeup(10ULL * 60ULL * 1000000ULL);
     esp_deep_sleep_start();
 }
 
@@ -94,46 +107,53 @@ void uploadToAPIGateway(String base64Data) {
     client.setInsecure();
     client.setTimeout(30000); 
 
-    String head = "{\"image\":\"";
+    // 1. Hardcode your distinct node identity tracking token here
+    String myDeviceID = "node_01"; 
+
+    // 2. Build the structured JSON body wrapper sequentially
+    // Result: {"deviceId":"node_01","image":"/9j/..."}
+    String head = "{\"deviceId\":\"" + myDeviceID + "\",\"image\":\"";
     String tail = "\"}";
-    size_t contentLength = head.length() + base64Data.length() + tail.length();
+    
+    String fullHttpBody = head + base64Data + tail;
+    size_t totalLength = fullHttpBody.length();
 
     Serial.println(">>> Connecting to Secure API Gateway...");
     if (client.connect(AWS_API_HOST, 443)) {
-        Serial.println(">>> TCP Connected. Sending Standardized Headers...");
+        Serial.println(">>> TCP Connected. Sending Standardized HTTP/1.1 Protocol...");
 
+        // Send standard headers matching the absolute calculated string length
         client.print("POST " + String(AWS_API_PATH) + " HTTP/1.1\r\n");
         client.print("Host: " + String(AWS_API_HOST) + "\r\n");
         client.print("x-api-key: " + String(AWS_API_KEY) + "\r\n");
         client.print("Content-Type: application/json\r\n"); 
-        client.print("Content-Length: " + String(contentLength) + "\r\n");
+        client.print("Content-Length: " + String(totalLength) + "\r\n");
         client.print("Connection: close\r\n\r\n");
-        
-        client.print(head); 
 
-        Serial.println("Streaming base64 data directly from heap allocation...");
+        Serial.println("Streaming unified JSON body with hardware device ID...");
         
-        const char* rawPointer = base64Data.c_str();
-        size_t total = base64Data.length();
-        size_t chunkSize = 1024; 
+        const char* rawPointer = fullHttpBody.c_str();
+        size_t remaining = totalLength;
+        size_t chunkSize = 1432; // Your optimized hardware segment packet size
         
-        for (size_t i = 0; i < total; i += chunkSize) {
-            size_t len = (total - i < chunkSize) ? (total - i) : chunkSize;
+        while (remaining > 0) {
+            size_t currentChunkSize = (remaining > chunkSize) ? chunkSize : remaining;
             
-            client.write((const uint8_t*)(rawPointer + i), len);
+            client.write((const uint8_t*)rawPointer, currentChunkSize);
+            
+            rawPointer += currentChunkSize;
+            remaining -= currentChunkSize;
             
             Serial.print("#");
-            delay(50); 
             yield(); 
         }
         
-        client.print(tail); 
         client.flush();
-        
         Serial.println("\n>>> Stream completely finalized. Awaiting Response...");
 
+        // 30-Second Latency Response Catcher
         unsigned long startResponse = millis();
-        while (millis() - startResponse < 15000) {
+        while (millis() - startResponse < 30000) {
             while (client.available()) {
                 String line = client.readStringUntil('\n');
                 Serial.println("AWS >> " + line);
@@ -170,13 +190,31 @@ bool initCamera() {
     config.xclk_freq_hz = 20000000;
     config.pixel_format = PIXFORMAT_JPEG;
 
-    // Use VGA for better detail
-    config.frame_size = FRAMESIZE_SVGA; // FRAMESIZE_QVGA , FRAMESIZE_VGA, FRAMESIZE_XVGA
+    // Fixed stable baseline for your SVGA field tests
+    config.frame_size = FRAMESIZE_SVGA; 
     config.jpeg_quality = 28;
-    config.fb_count = 1;
+    config.fb_count = 1; // Keeping it at 1 to save critical SRAM for TLS strings
 
     esp_err_t err = esp_camera_init(&config);
-    return (err == ESP_OK);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    // Configure internal hardware registers for harsh sunlight conditions
+    sensor_t * s = esp_camera_sensor_get();
+    if (s != NULL) {
+        s->set_whitebal(s, 1);       // Enable Auto White Balance
+        s->set_awb_gain(s, 1);       // Enable Auto White Balance Gain
+        s->set_exposure_ctrl(s, 1);  // Enable Auto Exposure Control
+        s->set_gain_ctrl(s, 1);      // Enable Auto Gain Control
+        
+        // Anti-glare optimization parameters
+        s->set_brightness(s, -2);    // Drop brightness floor down to minimum (-2)
+        s->set_contrast(s, 1);       // Boost contrast to preserve tree foliage definition
+        s->set_ae_level(s, -2);      // Target an underexposed metering index (-2 to 2)
+    }
+
+    return true;
 }
 
 void loop() {
